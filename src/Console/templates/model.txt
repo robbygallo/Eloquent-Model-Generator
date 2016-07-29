@@ -1,15 +1,22 @@
 <?php namespace $NAMESPACE$;
 
-use Illuminate\Database\Eloquent\Model;
+$USECLASSES$
 
-class $NAME$ extends Model {
-
-    /**
-     * Generated
-     */
-
+class $NAME$ extends BaseModel {
+	$SOFTDELETETRAIT$
     protected $table = '$TABLENAME$';
-    protected $fillable = [$FILLABLE$];
+
+	public $timestamps = $TIMESTAMPS$;
+
+    protected $fillable = [
+		$FILLABLE$
+	];
+
+    protected $guarded = [];
+
+	protected $validations = [
+		$VALIDATIONS$
+	];
 
 $FUNCTIONS$
 
