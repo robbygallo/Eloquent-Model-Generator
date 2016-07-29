@@ -2,7 +2,6 @@
 
 namespace User11001\EloquentModelGenerator\Console;
 
-use Illuminate\Support\Facades\DB;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Input\InputArgument;
 use Way\Generators\Commands\GeneratorCommand;
@@ -10,6 +9,7 @@ use Way\Generators\Generator;
 use Way\Generators\Filesystem\Filesystem;
 use Way\Generators\Compilers\TemplateCompiler;
 use Illuminate\Contracts\Config\Repository as Config;
+use DB;
 
 class GenerateModelsCommand extends GeneratorCommand
 {
@@ -19,6 +19,10 @@ class GenerateModelsCommand extends GeneratorCommand
      * @var string
      */
     protected $name = 'models:generate';
+
+    protected $softDelete = [];
+    protected $timestamps = [];
+    protected $classMethods = [];
 
     private static $namespace;
     /**
@@ -30,10 +34,10 @@ class GenerateModelsCommand extends GeneratorCommand
 
     private $schemaGenerator;
     /**
-     * @param Generator  $generator
-     * @param Filesystem  $file
-     * @param TemplateCompiler  $compiler
-     * @param Config  $config
+     * @param Generator        $generator
+     * @param Filesystem       $file
+     * @param TemplateCompiler $compiler
+     * @param Config           $config
      */
     public function __construct(
         Generator $generator,
@@ -107,29 +111,29 @@ class GenerateModelsCommand extends GeneratorCommand
         $this->info("\nAll done!");
     }
 
-    public function getTables() {
+    public function getTables()
+    {
         $schemaTables = $this->schemaGenerator->getTables();
 
         $specifiedTables = $this->option('tables');
 
         //when no tables specified, generate all tables
-        if(empty($specifiedTables)) {
+        if (empty($specifiedTables)) {
             return $schemaTables;
         }
 
         $specifiedTables = explode(',', $specifiedTables);
 
-
         $tablesToGenerate = [];
-        foreach($specifiedTables as $specifiedTable) {
-            if(!in_array($specifiedTable, $schemaTables)) {
+        foreach ($specifiedTables as $specifiedTable) {
+            if (!in_array($specifiedTable, $schemaTables)) {
                 $this->error("specified table not found: $specifiedTable");
             } else {
                 $tablesToGenerate[$specifiedTable] = $specifiedTable;
             }
         }
 
-        if(empty($tablesToGenerate)) {
+        if (empty($tablesToGenerate)) {
             $this->error('No tables to generate');
             die;
         }
@@ -145,76 +149,91 @@ class GenerateModelsCommand extends GeneratorCommand
         foreach ($eloquentRules as $table => $rules) {
             try {
                 $this->generateEloquentModel($destinationFolder, $table, $rules);
-            } catch(Exception $e) {
+            } catch (Exception $e) {
                 $this->error("\nFailed to generate model for table $table");
+
                 return;
             }
         }
     }
 
-    private function generateEloquentModel($destinationFolder, $table, $rules) {
+    private function generateEloquentModel($destinationFolder, $table, $rules)
+    {
+        if (!preg_match('/pivot/i', $table)) {
+            //1. Determine path where the file should be generated
+            $modelName = $this->generateModelNameFromTableName($table);
+            $filePathToGenerate = $destinationFolder.'/'.$modelName.'.php';
 
-        //1. Determine path where the file should be generated
-        $modelName = $this->generateModelNameFromTableName($table);
-        $filePathToGenerate = $destinationFolder . '/'.$modelName.'.php';
+            $canContinue = $this->canGenerateEloquentModel($filePathToGenerate, $table);
+            if (!$canContinue) {
+                return;
+            }
 
-        $canContinue = $this->canGenerateEloquentModel($filePathToGenerate, $table);
-        if(!$canContinue) {
-            return;
+            //2.  generate relationship functions and fillable array
+            $hasMany = $rules['hasMany'];
+            $hasOne = $rules['hasOne'];
+            $belongsTo = $rules['belongsTo'];
+            $belongsToMany = $rules['belongsToMany'];
+
+            $fillable = implode(",\n\t\t", $rules['fillable']);
+
+            $belongsToFunctions = $this->generateBelongsToFunctions($table, $belongsTo);
+            $belongsToManyFunctions = $this->generateBelongsToManyFunctions($table, $belongsToMany);
+            $hasManyFunctions = $this->generateHasManyFunctions($table, $hasMany);
+            $hasOneFunctions = $this->generateHasOneFunctions($table, $hasOne);
+
+            $functions = $this->generateFunctions([
+                $belongsToFunctions,
+                $belongsToManyFunctions,
+                $hasManyFunctions,
+                $hasOneFunctions,
+            ]);
+
+            // use classes
+            $useClasses = $this->getUseClasses($table);
+            $validations = $this->getValidation($table);
+            $softDeleteTrait = $this->getSoftDeleteTrait($table);
+            $timestamps = $this->timestamps[$table];
+
+            //3. prepare template data
+            $templateData = array(
+                'NAMESPACE' => self::$namespace,
+                'USECLASSES' => $useClasses,
+                'SOFTDELETETRAIT' => $softDeleteTrait,
+                'NAME' => $modelName,
+                'TABLENAME' => $table,
+                'TIMESTAMPS' => $timestamps,
+                'VALIDATIONS' => $validations,
+                'FILLABLE' => $fillable,
+                'FUNCTIONS' => $functions,
+            );
+
+            $templatePath = $this->getTemplatePath();
+
+            //run Jeffrey's generator
+            $this->generator->make(
+                $templatePath,
+                $templateData,
+                $filePathToGenerate
+            );
+            $this->info("Generated model for table $table");
         }
-
-        //2.  generate relationship functions and fillable array
-        $hasMany = $rules['hasMany'];
-        $hasOne = $rules['hasOne'];
-        $belongsTo = $rules['belongsTo'];
-        $belongsToMany = $rules['belongsToMany'];
-
-
-        $fillable = implode(', ', $rules['fillable']);
-
-        $belongsToFunctions = $this->generateBelongsToFunctions($belongsTo);
-        $belongsToManyFunctions = $this->generateBelongsToManyFunctions($belongsToMany);
-        $hasManyFunctions = $this->generateHasManyFunctions($hasMany);
-        $hasOneFunctions = $this->generateHasOneFunctions($hasOne);
-
-        $functions = $this->generateFunctions([
-            $belongsToFunctions,
-            $belongsToManyFunctions,
-            $hasManyFunctions,
-            $hasOneFunctions,
-        ]);
-
-        //3. prepare template data
-        $templateData = array(
-            'NAMESPACE' => self::$namespace,
-            'NAME' => $modelName,
-            'TABLENAME' => $table,
-            'FILLABLE' => $fillable,
-            'FUNCTIONS' => $functions
-        );
-
-        $templatePath = $this->getTemplatePath();
-
-        //run Jeffrey's generator
-        $this->generator->make(
-            $templatePath,
-            $templateData,
-            $filePathToGenerate
-        );
-        $this->info("Generated model for table $table");
     }
 
-    private function canGenerateEloquentModel($filePathToGenerate, $table) {
+    private function canGenerateEloquentModel($filePathToGenerate, $table)
+    {
         $canOverWrite = $this->option('overwrite');
-        if(file_exists($filePathToGenerate)) {
-            if($canOverWrite) {
+        if (file_exists($filePathToGenerate)) {
+            if ($canOverWrite) {
                 $deleted = unlink($filePathToGenerate);
-                if(!$deleted) {
+                if (!$deleted) {
                     $this->warn("Failed to delete existing model $filePathToGenerate");
+
                     return false;
                 }
             } else {
                 $this->warn("Skipped model generation, file already exists. (force using --overwrite) $table -> $filePathToGenerate");
+
                 return false;
             }
         }
@@ -222,16 +241,17 @@ class GenerateModelsCommand extends GeneratorCommand
         return true;
     }
 
-    private function getNamespace() {
+    private function getNamespace()
+    {
         $ns = $this->option('namespace');
-        if(empty($ns)) {
-            $ns = env('APP_NAME','App\Models');
+        if (empty($ns)) {
+            $ns = env('APP_NAME', 'App\Models');
         }
 
         //convert forward slashes in the namespace to backslashes
         $ns = str_replace('/', '\\', $ns);
-        return $ns;
 
+        return $ns;
     }
 
     private function generateFunctions($functionsContainer)
@@ -244,7 +264,157 @@ class GenerateModelsCommand extends GeneratorCommand
         return $f;
     }
 
-    private function generateHasManyFunctions($rulesContainer)
+    public function getUseClasses($table)
+    {
+        //$useClasses = "use Illuminate\Database\Eloquent\Model;";
+        $useClasses = "use App\Models\BaseModel;";
+        if ($this->softDelete[$table]) {
+            $useClasses .= "\nuse Illuminate\Database\Eloquent\SoftDeletes;\n";
+        }
+
+        return $useClasses;
+    }
+
+    public function getValidation($table)
+    {
+        $column_names = [];
+        $validations = '';
+
+        $columns = DB::select("DESCRIBE `{$table}`");
+
+		
+		$query = "SELECT REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_NAME = '{$table}'";
+		$keys = DB::select($query);
+
+
+        foreach ($columns as $column) {
+
+		    foreach ($keys as $key) {
+		        if (!empty($key->REFERENCED_TABLE_NAME)) {
+
+		            if ($column->Field == $key->COLUMN_NAME) {
+		                $column->validation = "exists:{$key->REFERENCED_TABLE_NAME},{$key->REFERENCED_COLUMN_NAME}";
+		                break;
+		            } 
+		        }
+		    }
+
+
+            $validators = [];
+
+            $column_names[] = $column->Field;
+
+			if (isset($column->validation)) {
+                $validators[] = $column->validation;
+            }
+            if (strpos($column->Type, 'int(') !== false) {
+                $validators[] = 'integer';
+                if (strpos($column->Type, 'unsigned') !== false) {
+                    $validators[] = 'min:0';
+                }
+            }
+            if ($column->Null == 'NO') {
+                if (strpos($column->Type, 'varchar(') === false && strpos($column->Type, 'text') === false) {
+                    $validators[] = 'required';
+                }
+            }
+
+            if (strpos($column->Type, 'varchar(') !== false) {
+                $length = str_replace(')', '', str_replace('varchar(', '', $column->Type));
+                $validators[] = "max:$length";
+                $validators[] = 'string';
+            }
+            if (strpos($column->Type, 'text') !== false) {
+                $validators[] = 'string';
+            }
+            if ($column->Type == 'date' || $column->Type == 'datetime' || $column->Type == 'timestamp') {
+                $validators[] = 'date';
+            }
+            if (strpos($column->Type, 'decimal(') !== false || strpos($column->Type, 'double(') !== false || strpos($column->Type, 'float(') !== false) {
+                $validators[] = 'numeric';
+            }
+
+            $validation = '';
+            if (count($validators) > 0) {
+                $validation = implode('|', $validators);
+            }
+
+            if (count($column_names) > 1) {
+                $validations .= "\n		";
+            }
+            $validations .= "'{$column->Field}' => '{$validation}',";
+        }
+
+        return $validations;
+    }
+
+    public function getSoftDeleteTrait($table)
+    {
+        $softDeleteTrait = "\n\tuse SoftDeletes;\n";
+
+		if(isset($this->classMethods[$table]) && count(isset($this->classMethods[$table]))) {
+			$softDeleteTrait .= '
+    public static function boot()
+    {
+        parent::boot();';
+        $softDeleteTrait .= '
+
+        static::deleted(function ('.'$item'.') {';
+        if (isset($this->classMethods[$table])) {
+            foreach ($this->classMethods[$table] as $method) {
+                $softDeleteTrait .=  sprintf("\n\t\t\t".'$item->%s()->delete();', $method);
+            }
+        }
+        $softDeleteTrait .=  '
+        });';
+
+        $softDeleteTrait .= '
+
+        static::restored(function ('.'$item'.') {';
+        if (isset($this->classMethods[$table])) {
+            foreach ($this->classMethods[$table] as $method) {
+                $softDeleteTrait .=  sprintf("\n\t\t\t".'$item->%s()->withTrashed()->get()->restore();', $method);
+            }
+        }
+        $softDeleteTrait .=  '
+        });';
+        $softDeleteTrait .=  '
+    }
+    ';
+		}
+
+        
+
+        return $softDeleteTrait;
+/*
+            if ($this->softDelete[$table]) {
+                return <<<SDT
+
+    use SoftDeletes;
+
+
+    public static function boot()
+    {
+        parent::boot();
+
+        static::deleted(function ($$item) {
+            $methods
+        });
+
+        static::restored(function ($$item) {
+            $methods
+        });
+    }
+
+SDT;
+            }
+        }
+*/
+
+        return;
+    }
+
+    private function generateHasManyFunctions($table, $rulesContainer)
     {
         $functions = '';
         foreach ($rulesContainer as $rules) {
@@ -252,20 +422,28 @@ class GenerateModelsCommand extends GeneratorCommand
             $key1 = $rules[1];
             $key2 = $rules[2];
 
-            $hasManyFunctionName = $this->getPluralFunctionName($hasManyModel);
+            // exclude pivot from relations
+            if (!preg_match('/pivot/i', $hasManyModel)) {
+                //$hasManyFunctionName = $this->getPluralFunctionName($hasManyModel);
 
-            $function = "
+                $name = sprintf('%s_%s', $hasManyModel, preg_replace('/_id/', '', $key1));
+                $hasManyFunctionName = camel_case($this->getSingularFunctionName($name));
+
+                $this->classMethods[$table][] = $hasManyFunctionName;
+
+                $function = "
     public function $hasManyFunctionName() {".'
-        return $this->hasMany'."(\\".self::$namespace."\\$hasManyModel::class, '$key1', '$key2');
+        return $this->hasMany'.'(\\'.self::$namespace."\\$hasManyModel::class, '$key1', '$key2');
     }
 ";
-            $functions .= $function;
+                $functions .= $function;
+            }
         }
 
         return $functions;
     }
 
-    private function generateHasOneFunctions($rulesContainer)
+    private function generateHasOneFunctions($table, $rulesContainer)
     {
         $functions = '';
         foreach ($rulesContainer as $rules) {
@@ -274,10 +452,13 @@ class GenerateModelsCommand extends GeneratorCommand
             $key2 = $rules[2];
 
             $hasOneFunctionName = $this->getSingularFunctionName($hasOneModel);
+            //$hasOneFunctionName = camel_case($this->getSingularFunctionName(preg_replace('/_id/', '', $key1)));
+
+            $this->classMethods[$table][] = $hasOneFunctionName;
 
             $function = "
     public function $hasOneFunctionName() {".'
-        return $this->hasOne'."(\\".self::$namespace."\\$hasOneModel::class, '$key1', '$key2');
+        return $this->hasOne'.'(\\'.self::$namespace."\\$hasOneModel::class, '$key1', '$key2');
     }
 ";
             $functions .= $function;
@@ -286,19 +467,41 @@ class GenerateModelsCommand extends GeneratorCommand
         return $functions;
     }
 
-    private function generateBelongsToFunctions($rulesContainer)
+    private function generateBelongsToFunctions($table, $rulesContainer)
     {
         $functions = '';
+
+        $duplicateMethod = [];
+        $checkDuplicateMethod = [];
         foreach ($rulesContainer as $rules) {
             $belongsToModel = $this->generateModelNameFromTableName($rules[0]);
+            $name = $this->getSingularFunctionName($belongsToModel);
+
+            if (in_array($name, $checkDuplicateMethod)) {
+                $duplicateMethod[] = $name;
+            }
+
+            $checkDuplicateMethod[] = $name;
+        }
+
+        foreach ($rulesContainer as $rules) {
+            $belongsToModel = $this->generateModelNameFromTableName($rules[0]);
+
             $key1 = $rules[1];
             $key2 = $rules[2];
 
             $belongsToFunctionName = $this->getSingularFunctionName($belongsToModel);
 
+            if (in_array($belongsToFunctionName, $duplicateMethod)) {
+                $name = sprintf('%s_%s', $belongsToModel, preg_replace('/_id/', '', $key1));
+                $belongsToFunctionName = camel_case($this->getSingularFunctionName($name));
+            }
+
+            //$this->classMethods[$table][] = $belongsToFunctionName;
+
             $function = "
     public function $belongsToFunctionName() {".'
-        return $this->belongsTo'."(\\".self::$namespace."\\$belongsToModel::class, '$key1', '$key2');
+        return $this->belongsTo'.'(\\'.self::$namespace."\\$belongsToModel::class, '$key1', '$key2');
     }
 ";
             $functions .= $function;
@@ -307,7 +510,7 @@ class GenerateModelsCommand extends GeneratorCommand
         return $functions;
     }
 
-    private function generateBelongsToManyFunctions($rulesContainer)
+    private function generateBelongsToManyFunctions($table, $rulesContainer)
     {
         $functions = '';
         foreach ($rulesContainer as $rules) {
@@ -316,11 +519,16 @@ class GenerateModelsCommand extends GeneratorCommand
             $key1 = $rules[2];
             $key2 = $rules[3];
 
-            $belongsToManyFunctionName = $this->getPluralFunctionName($belongsToManyModel);
+            //$belongsToManyFunctionName = $this->getPluralFunctionName($belongsToManyModel);
+            //$name = sprintf('%s_%s', $belongsToManyModel, preg_replace('/_id/', '', $key2));
+            $name = sprintf('%s_%s', preg_replace('/_id/', '', $key1), preg_replace('/_id/', '', $key2));
+            $belongsToManyFunctionName = camel_case($this->getPluralFunctionName($name));
+
+            //$this->classMethods[$table][] = $belongsToManyFunctionName;
 
             $function = "
     public function $belongsToManyFunctionName() {".'
-        return $this->belongsToMany'."(\\".self::$namespace."\\$belongsToManyModel::class, '$through', '$key1', '$key2');
+        return $this->belongsToMany'.'(\\'.self::$namespace."\\$belongsToManyModel::class, '$through', '$key1', '$key2');
     }
 ";
             $functions .= $function;
@@ -332,20 +540,27 @@ class GenerateModelsCommand extends GeneratorCommand
     private function getPluralFunctionName($modelName)
     {
         $modelName = lcfirst($modelName);
+
+        return sprintf('%sCollection', $modelName);
+
         return str_plural($modelName);
     }
 
     private function getSingularFunctionName($modelName)
     {
         $modelName = lcfirst($modelName);
-        return str_singular($modelName);
+
+        return $modelName;
+
+        //return str_singular($modelName);
     }
 
     private function generateModelNameFromTableName($table)
     {
-        return ucfirst(camel_case(str_singular($table)));
-    }
+        return ucfirst(camel_case($table));
 
+        //return ucfirst(camel_case(str_singular($table)));
+    }
 
     private function getColumnsPrimaryAndForeignKeysPerTable($tables)
     {
@@ -359,8 +574,9 @@ class GenerateModelsCommand extends GeneratorCommand
 
             // get columns lists
             $__columns = $this->schemaGenerator->getSchema()->listTableColumns($table);
+
             $columns = [];
-            foreach($__columns as $col) {
+            foreach ($__columns as $col) {
                 $columns[] = $col->toArray()['name'];
             }
 
@@ -423,11 +639,20 @@ class GenerateModelsCommand extends GeneratorCommand
 
     private function setFillableProperties($table, &$rules, $columns)
     {
+        $this->softDelete[$table] = false;
+        $this->timestamps[$table] = 'false';
         $fillable = [];
         foreach ($columns as $column_name) {
-            if ($column_name !== 'created_at' && $column_name !== 'updated_at') {
-                $fillable[] = "'$column_name'";
+            if ($column_name !== 'created_at' && $column_name !== 'updated_at' && $column_name !== 'deleted_at') {
+                $this->timestamp = 'true';
             }
+            if ($column_name === 'deleted_at') {
+                $this->softDelete[$table] = true;
+            }
+            $fillable[] = "'$column_name'";
+        }
+        if (in_array('created_at', $columns) && in_array('updated_at', $columns)) {
+            $this->timestamps[$table] = 'true';
         }
         $rules[$table]['fillable'] = $fillable;
     }
@@ -440,10 +665,10 @@ class GenerateModelsCommand extends GeneratorCommand
         $fkTable = $fk['on'];
         $field = $fk['field'];
         $references = $fk['references'];
-        if(in_array($fkTable, $tables)) {
+        if (in_array($fkTable, $tables)) {
             $rules[$fkTable]['hasMany'][] = [$table, $field, $references];
         }
-        if(in_array($table, $tables)) {
+        if (in_array($table, $tables)) {
             $rules[$table]['belongsTo'][] = [$fkTable, $field, $references];
         }
     }
@@ -456,10 +681,10 @@ class GenerateModelsCommand extends GeneratorCommand
         $fkTable = $fk['on'];
         $field = $fk['field'];
         $references = $fk['references'];
-        if(in_array($fkTable, $tables)) {
+        if (in_array($fkTable, $tables)) {
             $rules[$fkTable]['hasOne'][] = [$table, $field, $references];
         }
-        if(in_array($table, $tables)) {
+        if (in_array($table, $tables)) {
             $rules[$table]['belongsTo'][] = [$fkTable, $field, $references];
         }
     }
@@ -483,10 +708,10 @@ class GenerateModelsCommand extends GeneratorCommand
         //$fk2References = $fk2['references'];
 
         //User belongstomany groups user_group, user_id, group_id
-        if(in_array($fk1Table, $tables)) {
+        if (in_array($fk1Table, $tables)) {
             $rules[$fk1Table]['belongsToMany'][] = [$fk2Table, $table, $fk1Field, $fk2Field];
         }
-        if(in_array($fk2Table, $tables)) {
+        if (in_array($fk2Table, $tables)) {
             $rules[$fk2Table]['belongsToMany'][] = [$fk1Table, $table, $fk2Field, $fk1Field];
         }
     }
@@ -494,8 +719,12 @@ class GenerateModelsCommand extends GeneratorCommand
     //if FK is also a primary key, and there is only one primary key, we know this will be a one to one relationship
     private function detectOneToOne($fk, $primary)
     {
+        //echo "--- debug\n";
+        //echo 'count($primary): '.count($primary)."\n";
         if (count($primary) === 1) {
             foreach ($primary as $prim) {
+                //echo 'test: '.$prim.' === '.$fk['field']."\n";
+                //return true;
                 if ($prim === $fk['field']) {
                     return true;
                 }
@@ -569,7 +798,7 @@ class GenerateModelsCommand extends GeneratorCommand
     {
         return [
             'NAME' => ucwords($this->argument('modelName')),
-            'NAMESPACE' => env('APP_NAME','App\Models'),
+            'NAMESPACE' => env('APP_NAME', 'App\Models'),
         ];
     }
 
@@ -582,8 +811,8 @@ class GenerateModelsCommand extends GeneratorCommand
     {
         $path = $this->getPathByOptionOrConfig('path', 'model_target_path');
 
-        if(!is_dir($path)) {
-            $this->warn('Path is not a directory, creating ' . $path);
+        if (!is_dir($path)) {
+            $this->warn('Path is not a directory, creating '.$path);
             mkdir($path);
         }
 
