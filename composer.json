@@ -16,6 +16,10 @@
         "xethron/migrations-generator": "*"
     },
     "repositories": [
+        {  
+            "type": "vcs",  
+            "url": "robbygallo/eloquent-model-generator"  
+        },
         {
             "type": "git",
             "url": "git@github.com:jamisonvalenta/Laravel-4-Generators.git"
@@ -27,6 +31,7 @@
         }
     },
     "require-dev": {
+        "user11001/eloquent-model-generator": "~2.0",
         "phpunit/phpunit": ">=4.0.0",
         "mockery/mockery": ">=0.9.0",
         "illuminate/cache": ">=4.1.0",
