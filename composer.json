@@ -1,13 +1,13 @@
 {
-    "name": "robbygallo/eloquent-model-generator",
-    "description": "Auto-generates all Eloquent models from the database in a Laravel 5 in my project.",
+    "name": "user11001/eloquent-model-generator",
+    "description": "Auto-generates all Eloquent models from the database in a Laravel 5 project.",
     "keywords": ["laravel", "model", "eloquent", "artisan"],
     "license": "MIT",
     "minimum-stability": "dev",
     "authors": [
         {
-            "name": "Roberto Galli",
-            "email": "r.galli@hotmail.it"
+            "name": "Pepijn Olivier",
+            "email": "olivier.pepijn@gmail.com"
         }
     ],
     "require": {
@@ -23,7 +23,7 @@
     ],
     "autoload": {
         "psr-4": {
-            "Robbygallo\\EloquentModelGenerator\\": "src/"
+            "User11001\\EloquentModelGenerator\\": "src/"
         }
     },
     "require-dev": {

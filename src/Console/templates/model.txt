@@ -14,8 +14,12 @@ class $NAME$ extends BaseModel {
 
     protected $guarded = [];
 
-	protected $validations = [
-		$VALIDATIONS$
+	protected static $rules = [
+		$RULES$
+	];
+
+	protected static $messages = [
+		$MESSAGES$
 	];
 
 $FUNCTIONS$

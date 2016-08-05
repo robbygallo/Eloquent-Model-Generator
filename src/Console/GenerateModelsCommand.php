@@ -24,6 +24,8 @@ class GenerateModelsCommand extends GeneratorCommand
     protected $timestamps = [];
     protected $classMethods = [];
 
+    protected $seeds = [];
+
     private static $namespace;
     /**
      * The console command description.
@@ -155,13 +157,36 @@ class GenerateModelsCommand extends GeneratorCommand
                 return;
             }
         }
+		
+		$this->info('--- ');
+		$this->info('Table seeds');
+		$this->info(implode("\n", $this->seeds['table']));
+		$this->info('--- ');
+		$this->info('Pivot seeds');
+		$this->info(implode("\n", $this->seeds['pivot']));
     }
 
     private function generateEloquentModel($destinationFolder, $table, $rules)
     {
+
+		$modelName = $this->generateModelNameFromTableName($table);
+		
+		/*
+		try	{
+			\Artisan::call('make:seeder', [
+				'name' => sprintf('%sTableSeeder', $modelName)
+			]);
+		} catch (\Exception $e) {
+			echo $e->getMessage();
+		}
+		*/
+
+		
+ 
+
         if (!preg_match('/pivot/i', $table)) {
             //1. Determine path where the file should be generated
-            $modelName = $this->generateModelNameFromTableName($table);
+            
             $filePathToGenerate = $destinationFolder.'/'.$modelName.'.php';
 
             $canContinue = $this->canGenerateEloquentModel($filePathToGenerate, $table);
@@ -191,7 +216,7 @@ class GenerateModelsCommand extends GeneratorCommand
 
             // use classes
             $useClasses = $this->getUseClasses($table);
-            $validations = $this->getValidation($table);
+            $validations = $this->getValidations($table);
             $softDeleteTrait = $this->getSoftDeleteTrait($table);
             $timestamps = $this->timestamps[$table];
 
@@ -203,7 +228,8 @@ class GenerateModelsCommand extends GeneratorCommand
                 'NAME' => $modelName,
                 'TABLENAME' => $table,
                 'TIMESTAMPS' => $timestamps,
-                'VALIDATIONS' => $validations,
+                'RULES' => $validations['rules'],
+                'MESSAGES' => $validations['messages'],
                 'FILLABLE' => $fillable,
                 'FUNCTIONS' => $functions,
             );
@@ -217,7 +243,11 @@ class GenerateModelsCommand extends GeneratorCommand
                 $filePathToGenerate
             );
             $this->info("Generated model for table $table");
-        }
+
+			$this->seeds['table'][] = sprintf('artisan make:seeder %sTableSeeder', $modelName);
+        } else {
+			$this->seeds['pivot'][] = sprintf('artisan make:seeder %sTableSeeder', $modelName);
+		}
     }
 
     private function canGenerateEloquentModel($filePathToGenerate, $table)
@@ -275,10 +305,10 @@ class GenerateModelsCommand extends GeneratorCommand
         return $useClasses;
     }
 
-    public function getValidation($table)
+    public function getValidations($table)
     {
         $column_names = [];
-        $validations = '';
+        $rules = '';
 
         $columns = DB::select("DESCRIBE `{$table}`");
 
@@ -286,66 +316,86 @@ class GenerateModelsCommand extends GeneratorCommand
 		$query = "SELECT REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_NAME = '{$table}'";
 		$keys = DB::select($query);
 
-
+		
+		$messages = [];
         foreach ($columns as $column) {
+			if($column->Key != 'PRI') {
+				foreach ($keys as $key) {
+				    if (!empty($key->REFERENCED_TABLE_NAME)) {
 
-		    foreach ($keys as $key) {
-		        if (!empty($key->REFERENCED_TABLE_NAME)) {
+				        if ($column->Field == $key->COLUMN_NAME) {
+				            $column->rule = "exists:{$key->REFERENCED_TABLE_NAME},{$key->REFERENCED_COLUMN_NAME}";
+				            break;
+				        } 
+				    }
+				}
 
-		            if ($column->Field == $key->COLUMN_NAME) {
-		                $column->validation = "exists:{$key->REFERENCED_TABLE_NAME},{$key->REFERENCED_COLUMN_NAME}";
-		                break;
-		            } 
+
+		        $validators = [];
+
+		        $column_names[] = $column->Field;
+
+				if (isset($column->rule)) {
+		            $validators[] = $column->rule;
+					$messages[] = sprintf("'%s.unique' => 'must_be_unique',", $column->Field);
 		        }
-		    }
 
+				if (strpos($column->Type, 'tinyint(') !== false) {
+		            $validators[] = 'boolean';
 
-            $validators = [];
+					$messages[] = sprintf("'%s.boolean' => 'must_be_boolean',", $column->Field);
+		        } else if (strpos($column->Type, 'int(') !== false) {
+		            $validators[] = 'integer';
+					$messages[] = sprintf("'%s.integer' => 'must_be_integer',", $column->Field);
+		            if (strpos($column->Type, 'unsigned') !== false) {
+		                $validators[] = 'min:0';
+					$messages[] = sprintf("'%s.min' => 'must_min %s',", $column->Field, 0);
+		            }
+		        }
 
-            $column_names[] = $column->Field;
+		        if ($column->Null == 'NO') {
+		            if (strpos($column->Type, 'varchar(') === false && strpos($column->Type, 'text') === false) {
+		                $validators[] = 'required';
+						$messages[] = sprintf("'%s.required' => 'must_required',", $column->Field);
+		            }
+		        }
 
-			if (isset($column->validation)) {
-                $validators[] = $column->validation;
-            }
-            if (strpos($column->Type, 'int(') !== false) {
-                $validators[] = 'integer';
-                if (strpos($column->Type, 'unsigned') !== false) {
-                    $validators[] = 'min:0';
-                }
-            }
-            if ($column->Null == 'NO') {
-                if (strpos($column->Type, 'varchar(') === false && strpos($column->Type, 'text') === false) {
-                    $validators[] = 'required';
-                }
-            }
+		        if (strpos($column->Type, 'varchar(') !== false) {
+		            $length = str_replace(')', '', str_replace('varchar(', '', $column->Type));
+		            $validators[] = 'string';
+		            $validators[] = "max:$length";
+					$messages[] = sprintf("'%s.string' => 'must_string',", $column->Field);
+					$messages[] = sprintf("'%s.max' => 'must_max %s',", $column->Field, $length);
+		        }
+		        if (strpos($column->Type, 'text') !== false) {
+		            $validators[] = 'string';
+					$messages[] = sprintf("'%s.text' => 'must_string',", $column->Field);
+		        }
+		        if ($column->Type == 'date' || $column->Type == 'datetime' || $column->Type == 'timestamp') {
+		            $validators[] = 'date';
+					$messages[] = sprintf("'%s.date' => 'must_date',", $column->Field);
+		        }
+		        if (strpos($column->Type, 'decimal(') !== false || strpos($column->Type, 'double(') !== false || strpos($column->Type, 'float(') !== false) {
+		            $validators[] = 'numeric';
+					$messages[] = sprintf("'%s.numeric' => 'must_numeric',", $column->Field);
+		        }
 
-            if (strpos($column->Type, 'varchar(') !== false) {
-                $length = str_replace(')', '', str_replace('varchar(', '', $column->Type));
-                $validators[] = "max:$length";
-                $validators[] = 'string';
-            }
-            if (strpos($column->Type, 'text') !== false) {
-                $validators[] = 'string';
-            }
-            if ($column->Type == 'date' || $column->Type == 'datetime' || $column->Type == 'timestamp') {
-                $validators[] = 'date';
-            }
-            if (strpos($column->Type, 'decimal(') !== false || strpos($column->Type, 'double(') !== false || strpos($column->Type, 'float(') !== false) {
-                $validators[] = 'numeric';
-            }
+		        $validation = '';
+		        if (count($validators) > 0) {
+		            $validation = implode('|', $validators);
+		        }
 
-            $validation = '';
-            if (count($validators) > 0) {
-                $validation = implode('|', $validators);
-            }
-
-            if (count($column_names) > 1) {
-                $validations .= "\n		";
-            }
-            $validations .= "'{$column->Field}' => '{$validation}',";
+		        if (count($column_names) > 1) {
+		            $rules .= "\n		";
+		        }
+		        $rules .= "'{$column->Field}' => '{$validation}',";
+			}
         }
 
-        return $validations;
+
+		$messages = implode("		\n", $messages);
+
+        return ['rules' => $rules, 'messages' => $messages];
     }
 
     public function getSoftDeleteTrait($table)
@@ -610,7 +660,7 @@ SDT;
             $primary = $properties['primary'];
             $columns = $properties['columns'];
 
-            $this->setFillableProperties($table, $rules, $columns);
+            $this->setFillableProperties($table, $rules, $columns, $primary);
 
             $isManyToMany = $this->detectManyToMany($prep, $table);
 
@@ -637,7 +687,7 @@ SDT;
         return $rules;
     }
 
-    private function setFillableProperties($table, &$rules, $columns)
+    private function setFillableProperties($table, &$rules, $columns, $primary)
     {
         $this->softDelete[$table] = false;
         $this->timestamps[$table] = 'false';
@@ -649,7 +699,9 @@ SDT;
             if ($column_name === 'deleted_at') {
                 $this->softDelete[$table] = true;
             }
-            $fillable[] = "'$column_name'";
+			if($column_name != 'id') {
+            	$fillable[] = "'$column_name'";
+       		}
         }
         if (in_array('created_at', $columns) && in_array('updated_at', $columns)) {
             $this->timestamps[$table] = 'true';
